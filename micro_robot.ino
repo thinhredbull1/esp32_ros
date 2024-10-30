@@ -16,7 +16,7 @@ const char* ROS_IP = "172.20.10.6";
 const unsigned int ROS_PORT = 12345;
 int last_speed[2] = { 0, 0 };
 // Cấu hình các biến cho dữ liệu
-float rpms = 0;  // Vòng quay trên phút
+float rpms = 10;  // Vòng quay trên phút
 const int range_max_now = 6000;
 const int range_min_now = 50;
 #define MIN_SPEED 35
