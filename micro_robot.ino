@@ -1,5 +1,5 @@
 #include <WiFi.h>
-#include <WiFiUdp.h>
+#include <WebSocketsServer.h>
 #include <HardwareSerial.h>
 #define LED_ 4
 #define BUTTON_LEFT 14
@@ -12,8 +12,8 @@ HardwareSerial LiDARSerial(1);  // Sử dụng UART1 trên ESP32
 const int RX_PIN = 16;          // RX của ESP32 (kết nối với TX của LDS-007)
 const int TX_PIN = 17;          // TX của ESP32 (kết nối với RX của LDS-007)
 const long BAUD_RATE = 115200;  // Tốc độ baud cho LDS-007
-const char* ROS_IP = "172.20.10.6";
-const unsigned int ROS_PORT = 12345;
+const char* ssid = "ESP32_test";          // Thay "your_SSID" bằng tên Wi-Fi của bạn
+const char* password = "123456789";  // Thay "your_PASSWORD" bằng mật khẩu Wi-Fi của bạn
 int last_speed[2] = { 0, 0 };
 // Cấu hình các biến cho dữ liệu
 float rpms = 10;  // Vòng quay trên phút
@@ -36,24 +36,24 @@ void setupLidar() {
   LiDARSerial.write('$');
   LiDARSerial.print("startlds$");
 }
-void task_receive_signal() {
-  int16_t incomingPacket[2];  // Bộ đệm nhận dữ liệu cho int16
-
-  int packetSize = udp.parsePacket();
-  if (packetSize) {
-    int len = udp.read((uint8_t*)incomingPacket, sizeof(incomingPacket));
-    if (len == sizeof(incomingPacket)) {
-      int motor_speed_left = incomingPacket[0];
-      int motor_speed_right = incomingPacket[1];
-
-      Serial.print("Received motor speeds: ");
-      Serial.print("Left = ");
-      Serial.print(motor_speed_left);
-      Serial.print(", Right = ");
-      Serial.println(motor_speed_right);
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
+  if (type == WStype_BIN) {
+    if (length == 4) {  // 2 int16_t, mỗi int16_t là 2 byte
+      speed_left = (int16_t)(payload[0] | (payload[1] << 8));
+      speed_right = (int16_t)(payload[2] | (payload[3] << 8));
+      Serial.printf("Received speed_left: %d, speed_right: %d\n", speed_left, speed_right);
+    } else {
+      Serial.println("Invalid binary payload length");
     }
+  } else if (type == WStype_TEXT) {
+    Serial.printf("Text message received: %s\n", payload);
+  } else if (type == WStype_DISCONNECTED) {
+    Serial.printf("Client [%u] disconnected!\n", num);
+  } else if (type == WStype_CONNECTED) {
+    Serial.printf("Client [%u] connected!\n", num);
   }
 }
+
 void lidatTaskFake() {
   static unsigned long time_delay = millis();
   if (millis() - time_delay > 200) {
@@ -62,9 +62,18 @@ void lidatTaskFake() {
       ranges[i] = i * 10;
     }
     time_delay = millis();
-    udp.beginPacket(ROS_IP, ROS_PORT);
-    udp.write((uint8_t*)ranges, sizeof(ranges));
-    udp.endPacket();
+     uint16_t lidarData[360];
+    for (int i = 0; i < 360; i++) {
+      lidarData[i] = random(500, 5500);  // Khoảng cách từ 0.5m đến 5.5m
+    }
+
+    // Đóng gói và gửi dữ liệu lidar qua WebSocket
+    uint8_t data[720];  // Mỗi giá trị là 2 byte
+    for (int i = 0; i < 360; i++) {
+      data[2 * i] = lidarData[i] & 0xFF;
+      data[2 * i + 1] = (lidarData[i] >> 8) & 0xFF;
+    }
+    webSocket.broadcastBIN(data, sizeof(data)); 
     static bool state_led=0;
     state_led=1-state_led;
     digitalWrite(LED_,state_led);
@@ -124,9 +133,12 @@ void lidarTask() {
           }
         }
       }
-      udp.beginPacket(ROS_IP, ROS_PORT);
-      udp.write((uint8_t*)ranges, sizeof(ranges));
-      udp.endPacket();
+    uint8_t data[720];  // Mỗi giá trị là 2 byte
+    for (int i = 0; i < 360; i++) {
+      data[2 * i] = ranges[i] & 0xFF;
+      data[2 * i + 1] = (ranges[i] >> 8) & 0xFF;
+    }
+    webSocket.broadcastBIN(data, sizeof(data)); 
       // Serial.print("RPM: ");
       // Serial.println(rpms);
       // Serial.print("First distance: ");
@@ -136,17 +148,16 @@ void lidarTask() {
     }
   }
 }
-void setupWiFi() {
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\nWiFi connected");
-  Serial.println(WiFi.localIP());
-  udp.begin(ROS_PORT);
-  Serial.println("UDP initialized.");
+void setupWiFiEsp()
+{
+  WiFi.softAP(ssid, password);
+ 
+  IPAddress IP = WiFi.softAPIP(); //mặc định là 192.168.4.1
+  Serial.print("AP IP address: ");
+  Serial.println(IP);
+  Serial.println("WIFI SUCCESS");
 }
+
 void control_motor_left(int speed) {
 
   bool direct = speed > 0 ? 0 : 1;
@@ -264,12 +275,9 @@ void setup() {
   pinMode(LED_,OUTPUT);
   pinMode(BUTTON_LEFT,INPUT_PULLUP);
   pinMode(BUTTON_RIGHT,INPUT_PULLUP);
-  setupWiFi();
-  // setupLidar();
-  // xTaskCreate(lidarTask, "Send LiDAR Data", 2048, NULL, 1, NULL);
-
-  // Tạo task để nhận tín hiệu từ server
-  // xTaskCreate(task_receive_signal, "Receive Signal", 2048, NULL, 1, NULL);
+  setupWiFiEsp();
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
 }
 
 void loop() {
@@ -277,7 +285,7 @@ void loop() {
   // unsigned long time_ = millis();
   lidatTaskFake();
   // lidarTask();
-  task_receive_signal();
+   webSocket.loop();
   // unsigned long over = millis() - time_;
   // if (over >= 30) {
   //   Serial.print("over");
